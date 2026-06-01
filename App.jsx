@@ -53,8 +53,13 @@ async function getAccessToken() {
 
 // ─── Gmail API helpers ──────────────────────────────────────────────────────
 async function gmailSearch(token, query, maxResults = 5) {
+  // Last 30 days filter
+  const since = new Date();
+  since.setDate(since.getDate() - 30);
+  const dateFilter = `after:${since.getFullYear()}/${String(since.getMonth()+1).padStart(2,'0')}/${String(since.getDate()).padStart(2,'0')}`;
+  const fullQuery = `${query} ${dateFilter}`;
   const r = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(fullQuery)}&maxResults=${maxResults}`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const data = await r.json();
@@ -78,8 +83,22 @@ async function gmailGetMessage(token, msgId) {
 }
 
 // ─── Drive API helpers ──────────────────────────────────────────────────────
-async function driveSearch(token, keyword) {
-  // First find the "Engineering for jobs" folder
+async function driveSearch(token, emailContext) {
+  // Step 1: Ask Claude to extract the best search keyword from the email context
+  const keyword = await callClaude(
+    `From this email context, extract the single best search term to find matching files in Google Drive.
+The Drive folder is named "Engineering for jobs" and contains subfolders named like "Smith, John - 123 Main St".
+Extract either: a street address number (like 31251), a last name, or a street name — whichever is most specific.
+Return ONLY the search term, nothing else, no quotes, no explanation.
+
+Email context: ${emailContext.slice(0, 300)}`,
+    "Return only the search keyword, nothing else."
+  );
+
+  const term = keyword.trim().split("
+")[0].trim();
+
+  // Step 2: Find the "Engineering for jobs" folder
   const folderRes = await fetch(
     `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent("name = 'Engineering for jobs' and mimeType = 'application/vnd.google-apps.folder'")}&fields=files(id,name)`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -88,22 +107,30 @@ async function driveSearch(token, keyword) {
   const folder = folderData.files?.[0];
 
   if (!folder) {
-    // Fallback: search everywhere
+    // Fallback: fullText search across all Drive
     const r = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`name contains '${keyword}'`)}&fields=files(id,name,mimeType,webViewLink)&pageSize=4`,
+      `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`fullText contains '${term}'`)}&fields=files(id,name,mimeType,webViewLink)&pageSize=5`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const d = await r.json();
     return d.files || [];
   }
 
-  // Search inside the folder
-  const r = await fetch(
-    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folder.id}' in parents and name contains '${keyword}'`)}&fields=files(id,name,mimeType,webViewLink)&pageSize=5`,
+  // Step 3: Search by folder name match first
+  const nameRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folder.id}' in parents and name contains '${term}'`)}&fields=files(id,name,mimeType,webViewLink)&pageSize=5`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  const d = await r.json();
-  return d.files || [];
+  const nameData = await nameRes.json();
+  if (nameData.files?.length) return nameData.files;
+
+  // Step 4: Fallback — fullText search inside the Engineering for jobs folder
+  const ftRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folder.id}' in parents and fullText contains '${term}'`)}&fields=files(id,name,mimeType,webViewLink)&pageSize=5`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  const ftData = await ftRes.json();
+  return ftData.files || [];
 }
 
 // ─── Anthropic API helper ───────────────────────────────────────────────────
@@ -176,11 +203,9 @@ function ThreadCard({ thread, onDraft, token, selected, onSelect }) {
   async function loadDrive() {
     if (driveFiles !== null || !token) return;
     setDriveLoading(true);
-    // Extract keyword from subject — strip common words
-    const keyword = (thread.subject || thread.from || "")
-      .replace(/re:|fwd:|fw:|patio cover|estimate|quote|permit|plan check/gi, "")
-      .trim().split(" ").slice(0, 3).join(" ");
-    const files = keyword ? await driveSearch(token, keyword) : [];
+    // Use full email context to find relevant Drive files
+    const context = `${thread.subject || ""} ${thread.from || ""} ${thread.snippet || ""}`;
+    const files = await driveSearch(token, context);
     setDriveFiles(files);
     setDriveLoading(false);
   }
