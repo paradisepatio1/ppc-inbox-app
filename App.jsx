@@ -95,8 +95,8 @@ Email context: ${emailContext.slice(0, 300)}`,
     "Return only the search keyword, nothing else."
   );
 
-  const term = keyword.trim().split("
-")[0].trim();
+  const term = (keyword.trim().match(/[^
+]+/) || [keyword.trim()])[0].trim();
 
   // Step 2: Find the "Engineering for jobs" folder
   const folderRes = await fetch(
