@@ -53,11 +53,11 @@ async function getAccessToken() {
 
 // ─── Gmail API helpers ──────────────────────────────────────────────────────
 async function gmailSearch(token, query, maxResults = 5) {
-  // Last 30 days filter
+  // Last 30 days filter — Gmail uses Unix timestamp for "after:"
   const since = new Date();
   since.setDate(since.getDate() - 30);
-  const dateFilter = `after:${since.getFullYear()}/${String(since.getMonth()+1).padStart(2,'0')}/${String(since.getDate()).padStart(2,'0')}`;
-  const fullQuery = `${query} ${dateFilter}`;
+  const unixTimestamp = Math.floor(since.getTime() / 1000);
+  const fullQuery = `${query} after:${unixTimestamp}`;
   const r = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(fullQuery)}&maxResults=${maxResults}`,
     { headers: { Authorization: `Bearer ${token}` } }
